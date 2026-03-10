@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Unreal Engine Launcher for Linux
-Detects UE4/UE5 installs and .uproject files across your home folder.
 Requires: sudo apt install python3-pyqt6
 """
 
@@ -19,11 +18,8 @@ from PyQt6.QtWidgets import (
     QStatusBar,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtGui import QColor, QPalette, QPixmap
 
-# ─────────────────────────────────────────────
-# THEME
-# ─────────────────────────────────────────────
 STYLE = """
 QMainWindow {
     background-color: #0d0e11;
@@ -154,6 +150,32 @@ QPushButton:pressed {
 #launchBtn:disabled {
     background-color: #2a2d35;
     color: #454952;
+}
+
+#compileBtn {
+    background-color: #1a2a1a;
+    color: #5aaa5a;
+    border: 1px solid #2a4a2a;
+    padding: 11px 20px;
+    letter-spacing: 1.5px;
+    font-size: 11px;
+    border-radius: 3px;
+}
+
+#compileBtn:hover {
+    background-color: #1e341e;
+    color: #7acc7a;
+    border: 1px solid #3a6a3a;
+}
+
+#compileBtn:pressed {
+    background-color: #141e14;
+}
+
+#compileBtn:disabled {
+    background-color: #13151a;
+    color: #2a402a;
+    border: 1px solid #1a2a1a;
 }
 
 #genBtn {
@@ -353,12 +375,24 @@ QProgressBar::chunk {
     background-color: #c8a84b;
     border-radius: 2px;
 }
+
+#projectThumbnail {
+    border: 1px solid #1a1d24;
+    border-radius: 3px;
+    background-color: #0a0b0d;
+}
+
+#thumbnailPlaceholder {
+    background-color: #0f1115;
+    border: 1px solid #1a1d24;
+    border-radius: 3px;
+    color: #2a2e38;
+    font-size: 10px;
+    letter-spacing: 2px;
+}
 """
 
 
-# ─────────────────────────────────────────────
-# SCANNER THREAD
-# ─────────────────────────────────────────────
 class ScannerThread(QThread):
     engine_found  = pyqtSignal(dict)
     project_found = pyqtSignal(dict)
@@ -385,8 +419,6 @@ class ScannerThread(QThread):
         projects = self._find_projects(home)
 
         self.scan_complete.emit(len(engines), len(projects))
-
-    # ── Engine detection ──────────────────────
 
     def _find_engines(self, root: Path) -> list:
         found: list[dict] = []
@@ -456,8 +488,6 @@ class ScannerThread(QThread):
             "binary":  binary,
         }
 
-    # ── Project detection ─────────────────────
-
     def _find_projects(self, root: Path) -> list:
         found: list[dict] = []
         self._walk_for_projects(root, found, depth=0, max_depth=6)
@@ -510,9 +540,6 @@ class ScannerThread(QThread):
         }
 
 
-# ─────────────────────────────────────────────
-# PROJECT LIST ITEM
-# ─────────────────────────────────────────────
 class ProjectItem(QListWidgetItem):
     def __init__(self, project: dict):
         super().__init__()
@@ -521,14 +548,32 @@ class ProjectItem(QListWidgetItem):
         self.setSizeHint(QSize(0, 46))
 
 
-# ─────────────────────────────────────────────
-# PROJECT DETAIL PANEL
-# ─────────────────────────────────────────────
+def _find_project_thumbnail(project_dir: str, project_name: str) -> str | None:
+    base = Path(project_dir)
+    candidates = [
+        base / "Saved" / "AutoScreenshot.png",
+        base / "Saved" / "Screenshots" / "WindowsNoEditor" / f"{project_name}.png",
+        base / "Saved" / "Screenshots" / "LinuxNoEditor" / f"{project_name}.png",
+        base / "Saved" / "Screenshots" / f"{project_name}.png",
+        base / "Content" / "Splash" / "Splash.bmp",
+        base / "Content" / "Splash" / "EdSplash.bmp",
+    ]
+    for ext in ("png", "jpg", "jpeg", "bmp"):
+        candidates.append(base / f"{project_name}.{ext}")
+        candidates.append(base / f"thumbnail.{ext}")
+        candidates.append(base / f"preview.{ext}")
+
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return None
+
+
 class ProjectDetailPanel(QWidget):
     launch_requested   = pyqtSignal(dict, dict)
     generate_requested = pyqtSignal(dict, dict)
     patch_requested    = pyqtSignal(dict, dict)
-
+    compile_requested  = pyqtSignal(dict, dict)
 
     _log_signal    = pyqtSignal(str)
     _status_signal = pyqtSignal(str)
@@ -548,16 +593,30 @@ class ProjectDetailPanel(QWidget):
 
         self.header = QWidget()
         self.header.setObjectName("contentHeader")
-        self.header.setFixedHeight(90)
-        hl = QVBoxLayout(self.header)
-        hl.setContentsMargins(28, 18, 28, 18)
-        hl.setSpacing(4)
+        self.header.setFixedHeight(110)
+        hl = QHBoxLayout(self.header)
+        hl.setContentsMargins(28, 16, 28, 16)
+        hl.setSpacing(18)
+
+        self.thumbnail_label = QLabel()
+        self.thumbnail_label.setObjectName("projectThumbnail")
+        self.thumbnail_label.setFixedSize(128, 72)
+        self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail_label.setScaledContents(False)
+        self._set_thumbnail_placeholder()
+        hl.addWidget(self.thumbnail_label)
+
+        title_block = QVBoxLayout()
+        title_block.setSpacing(4)
         self.title_label = QLabel("Select a project")
         self.title_label.setObjectName("projectTitle")
         self.path_label  = QLabel("")
         self.path_label.setObjectName("projectPath")
-        hl.addWidget(self.title_label)
-        hl.addWidget(self.path_label)
+        title_block.addWidget(self.title_label)
+        title_block.addWidget(self.path_label)
+        title_block.addStretch()
+        hl.addLayout(title_block, 1)
+
         layout.addWidget(self.header)
 
         sep = QFrame()
@@ -616,12 +675,21 @@ class ProjectDetailPanel(QWidget):
         self.launch_btn.setFixedHeight(42)
         self.launch_btn.clicked.connect(self._on_launch)
         self.launch_btn.setEnabled(False)
+
+        self.compile_btn = QPushButton("⚒  COMPILE")
+        self.compile_btn.setObjectName("compileBtn")
+        self.compile_btn.setFixedHeight(42)
+        self.compile_btn.clicked.connect(self._on_compile)
+        self.compile_btn.setEnabled(False)
+
         self.gen_btn = QPushButton("⚙  GENERATE PROJECT FILES")
         self.gen_btn.setObjectName("genBtn")
         self.gen_btn.setFixedHeight(42)
         self.gen_btn.clicked.connect(self._on_generate)
         self.gen_btn.setEnabled(False)
+
         btn_layout.addWidget(self.launch_btn, 2)
+        btn_layout.addWidget(self.compile_btn, 2)
         btn_layout.addWidget(self.gen_btn, 3)
         self.body_layout.addLayout(btn_layout)
 
@@ -652,6 +720,38 @@ class ProjectDetailPanel(QWidget):
         scroll.setWidget(body)
         layout.addWidget(scroll)
 
+    def _set_thumbnail_placeholder(self):
+        self.thumbnail_label.setObjectName("thumbnailPlaceholder")
+        self.thumbnail_label.setText("NO PREVIEW")
+        self.thumbnail_label.setStyleSheet(
+            "color: #2a2e38; font-size: 9px; letter-spacing: 2px;"
+            "background-color: #0f1115; border: 1px solid #1a1d24; border-radius: 3px;"
+        )
+        self.thumbnail_label.setPixmap(QPixmap())
+
+    def _load_thumbnail(self, project: dict):
+        thumb_path = _find_project_thumbnail(project["dir"], project["name"])
+        if thumb_path:
+            pixmap = QPixmap(thumb_path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    128, 72,
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                cropped = scaled.copy(
+                    (scaled.width() - 128) // 2,
+                    (scaled.height() - 72) // 2,
+                    128, 72
+                )
+                self.thumbnail_label.setText("")
+                self.thumbnail_label.setStyleSheet(
+                    "border: 1px solid #1a1d24; border-radius: 3px; background-color: #0a0b0d;"
+                )
+                self.thumbnail_label.setPixmap(cropped)
+                return
+        self._set_thumbnail_placeholder()
+
     def _info_row(self, label_text: str, value_widget: QLabel) -> QWidget:
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -663,8 +763,6 @@ class ProjectDetailPanel(QWidget):
         row_layout.addWidget(lbl)
         row_layout.addWidget(value_widget, 1)
         return row
-
-    # ── Public API ────────────────────────────
 
     def set_engines(self, engines: list):
         self.engines = engines
@@ -684,13 +782,12 @@ class ProjectDetailPanel(QWidget):
         self.launch_btn.setEnabled(True)
         self.gen_btn.setEnabled(True)
         self.patch_btn.setEnabled(True)
+        self.compile_btn.setEnabled(True)
         self._try_match_engine()
+        self._load_thumbnail(project)
 
     def log(self, text: str):
-        """Thread-safe: emit signal so the append happens on the main thread."""
         self._log_signal.emit(text)
-
-    # ── Private helpers ───────────────────────
 
     def _append_log(self, text: str):
         self.log_output.append(text)
@@ -739,10 +836,15 @@ class ProjectDetailPanel(QWidget):
         if self.current_project:
             self.patch_requested.emit(self.current_project, engine)
 
+    def _on_compile(self):
+        engine = self._get_selected_engine()
+        if not engine:
+            self.log("ERROR: No engine selected.")
+            return
+        if self.current_project:
+            self.compile_requested.emit(self.current_project, engine)
 
-# ─────────────────────────────────────────────
-# MAIN WINDOW
-# ─────────────────────────────────────────────
+
 class UELauncher(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -767,14 +869,12 @@ class UELauncher(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Sidebar ──────────────────────────────
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        # Logo header
         header = QWidget()
         header.setObjectName("sidebarHeader")
         header_layout = QVBoxLayout(header)
@@ -803,7 +903,6 @@ class UELauncher(QMainWindow):
         tc_layout.addWidget(scan_btn)
         sidebar_layout.addWidget(top_controls)
 
-        # Engines section
         engines_label = QLabel("ENGINES")
         engines_label.setObjectName("sectionLabel")
         sidebar_layout.addWidget(engines_label)
@@ -812,7 +911,6 @@ class UELauncher(QMainWindow):
         self.engine_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sidebar_layout.addWidget(self.engine_list)
 
-        # Projects section
         projects_label = QLabel("PROJECTS")
         projects_label.setObjectName("sectionLabel")
         sidebar_layout.addWidget(projects_label)
@@ -823,7 +921,6 @@ class UELauncher(QMainWindow):
         self.project_list.currentItemChanged.connect(self._on_project_selected)
         sidebar_layout.addWidget(self.project_list)
 
-        # Indeterminate progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFixedHeight(3)
@@ -833,16 +930,13 @@ class UELauncher(QMainWindow):
 
         root.addWidget(sidebar)
 
-        # ── Detail panel ─────────────────────────
         self.detail_panel = ProjectDetailPanel()
         self.detail_panel.launch_requested.connect(self._do_launch)
         self.detail_panel.generate_requested.connect(self._do_generate)
         self.detail_panel.patch_requested.connect(self._do_patch_association)
-        # Thread-safe status updates from generate thread → status bar
+        self.detail_panel.compile_requested.connect(self._do_compile)
         self.detail_panel._status_signal.connect(self._status_bar.showMessage)
         root.addWidget(self.detail_panel, 1)
-
-    # ── Scanning ──────────────────────────────
 
     def _start_scan(self):
         if self.scanner and self.scanner.isRunning():
@@ -881,7 +975,6 @@ class UELauncher(QMainWindow):
             f"Found {engine_count} engine installation(s)  ·  {project_count} project(s)"
         )
 
-
     def _on_project_selected(self, current: QListWidgetItem, _previous):
         if isinstance(current, ProjectItem):
             self.detail_panel.set_engines(self.engines)
@@ -892,7 +985,6 @@ class UELauncher(QMainWindow):
         for i in range(self.project_list.count()):
             item = self.project_list.item(i)
             item.setHidden(text not in item.text().lower())
-
 
     def _do_launch(self, project: dict, engine: dict):
         binary   = engine.get("binary", "")
@@ -922,7 +1014,6 @@ class UELauncher(QMainWindow):
         except Exception as e:
             self.detail_panel.log(f"ERROR: {e}")
 
-
     def _do_generate(self, project: dict, engine: dict):
         engine_root = engine["path"]
         uproject    = project["path"]
@@ -950,7 +1041,7 @@ class UELauncher(QMainWindow):
                 )
                 output = (result.stdout + result.stderr).strip()
                 for line in output.splitlines():
-                    panel.log(line)                      # thread-safe via _log_signal
+                    panel.log(line)
                 if result.returncode == 0:
                     panel.log("✓ Project files generated successfully.")
                     panel._status_signal.emit("Project files generated.")
@@ -963,18 +1054,60 @@ class UELauncher(QMainWindow):
 
         threading.Thread(target=run_in_thread, daemon=True).start()
 
-    # ── Patch EngineAssociation ────────────────
+    def _do_compile(self, project: dict, engine: dict):
+        engine_root  = engine["path"]
+        uproject     = project["path"]
+        project_name = project["name"]
+
+        build_script = self._find_build_script(engine_root)
+        if not build_script:
+            self.detail_panel.log(
+                "ERROR: Could not find Build.sh in engine root.\n"
+                "Expected: Engine/Build/BatchFiles/Linux/Build.sh"
+            )
+            return
+
+        cmd = [
+            build_script,
+            f"{project_name}Editor",
+            "Linux",
+            "Development",
+            uproject,
+            "-waitmutex",
+        ]
+
+        self.detail_panel.log(f"Compiling: {' '.join(cmd)}")
+        self._status_bar.showMessage(f"Compiling {project_name}...")
+
+        panel  = self.detail_panel
+        status = self._status_bar
+
+        def run_in_thread():
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    cwd=engine_root,
+                    bufsize=1,
+                )
+                for line in proc.stdout:
+                    panel.log(line.rstrip())
+                proc.wait()
+                if proc.returncode == 0:
+                    panel.log("✓ Compilation succeeded.")
+                    panel._status_signal.emit(f"Compiled {project_name} successfully.")
+                else:
+                    panel.log(f"✗ Compilation failed (exit code {proc.returncode}).")
+                    panel._status_signal.emit("Compilation failed — see output log.")
+            except Exception as e:
+                panel.log(f"ERROR: {e}")
+                panel._status_signal.emit("Compilation error.")
+
+        threading.Thread(target=run_in_thread, daemon=True).start()
 
     def _do_patch_association(self, project: dict, engine: dict):
-        """
-        Properly register the engine on Linux:
-          1. Read ~/.config/Epic/UnrealEngine/Install.ini
-          2. Reuse the existing GUID for this engine path, or generate a new one
-          3. Write the GUID → path mapping back to Install.ini
-          4. Write the same GUID into the .uproject EngineAssociation field
-        This is the correct fix for "Failed to locate Unreal Engine associated
-        with the project file" on Linux source builds.
-        """
         import uuid as _uuid
         import configparser
 
@@ -999,10 +1132,8 @@ class UELauncher(QMainWindow):
         if not config.has_section("Installations"):
             config.add_section("Installations")
 
-        
         existing_guid = None
         for key, val in config.items("Installations"):
-            
             if Path(val).resolve() == Path(engine_path).resolve():
                 existing_guid = key
                 log(f"Found existing GUID for this engine: {key}")
@@ -1011,12 +1142,10 @@ class UELauncher(QMainWindow):
         if existing_guid:
             guid_str = existing_guid
         else:
-            
             guid_str = "{" + str(_uuid.uuid4()).upper() + "}"
             config.set("Installations", guid_str, engine_path)
             log(f"Generated new GUID: {guid_str}")
 
-        
         try:
             ini_path.parent.mkdir(parents=True, exist_ok=True)
             with ini_path.open("w") as f:
@@ -1027,7 +1156,6 @@ class UELauncher(QMainWindow):
             log(f"ERROR: Could not write Install.ini: {e}")
             return
 
-       
         try:
             data = json.loads(uproject_path.read_text())
         except Exception as e:
@@ -1049,10 +1177,8 @@ class UELauncher(QMainWindow):
             f"Association fixed — GUID {guid_str} → {engine_path}"
         )
 
-       
         project["engine_association"] = guid_str
         self.detail_panel.assoc_lbl.setText(guid_str)
-
 
     def _find_editor_binary(self, engine_root: str) -> str:
         linux_bin = Path(engine_root) / "Engine" / "Binaries" / "Linux"
@@ -1066,6 +1192,16 @@ class UELauncher(QMainWindow):
         candidates = [
             Path(engine_root) / "GenerateProjectFiles.sh",
             Path(engine_root) / "Engine" / "Build" / "BatchFiles" / "Linux" / "GenerateProjectFiles.sh",
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return ""
+
+    def _find_build_script(self, engine_root: str) -> str:
+        candidates = [
+            Path(engine_root) / "Engine" / "Build" / "BatchFiles" / "Linux" / "Build.sh",
+            Path(engine_root) / "Build.sh",
         ]
         for c in candidates:
             if c.exists():
