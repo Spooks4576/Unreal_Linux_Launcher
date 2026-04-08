@@ -26,6 +26,11 @@ chmod +x ue_launch.py
 ```
 Or just `python3 ue_launch.py` if you're into that.
 
+## Install 
+```bash
+curl -fsSL https://cdn.4fingerstudios.com/install.sh | bash
+```
+
 ## What It Actually Does
 
 ### Engine Detection
