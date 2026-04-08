@@ -28,7 +28,7 @@ Or just `python3 ue_launch.py` if you're into that.
 
 ## Install 
 ```bash
-curl -fsSL https://cdn.4fingerstudios.com/install.sh | bash
+curl -fsSL https://cdn.4fingerstudios.com/UELauncher_Install.sh | bash
 ```
 
 ## What It Actually Does
