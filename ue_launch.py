@@ -989,27 +989,52 @@ class UELauncher(QMainWindow):
     def _do_launch(self, project: dict, engine: dict):
         binary   = engine.get("binary", "")
         uproject = project["path"]
-
+    
         if not os.path.isfile(binary):
             binary = self._find_editor_binary(engine["path"])
-
+    
         if not binary:
             self.detail_panel.log(
                 f"ERROR: Could not find editor binary in {engine['path']}"
             )
             return
-
+    
         self.detail_panel.log(f"Launching: {binary} \"{uproject}\"")
         self._status_bar.showMessage(f"Launching {project['name']}...")
-
+    
+        env = os.environ.copy()
+        env.update({
+            # Prevent UE5 from grabbing exclusive Vulkan scanout and blacking out compositor
+            "VK_PRESENT_MODE": "2",
+            # Stop AMD switchable graphics layer interfering (safe to set on NVIDIA too)
+            "DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1": "1",
+            # Prevent Blackwell driver aggressively reallocating VRAM on init
+            "NVIDIA_PRESERVE_VIDEO_MEMORY_ALLOCATIONS": "1",
+            # Force borderless windowed at your resolution - prevents fullscreen black screen
+            "UE_FULLSCREEN_MODE": "2",
+        })
+    
+        cmd = [
+            binary,
+            uproject,
+            "-windowed",
+            "-ResX=1920",
+            "-ResY=1080",
+            "-WaylandEnable",
+        ]
+    
         try:
             subprocess.Popen(
-                [binary, uproject],
+                cmd,
+                env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
             self.detail_panel.log("✓ Launch command sent. Editor is starting...")
+            self.detail_panel.log("  → VK_PRESENT_MODE=2 (FIFO, compositor-safe)")
+            self.detail_panel.log("  → NVIDIA_PRESERVE_VIDEO_MEMORY_ALLOCATIONS=1")
+            self.detail_panel.log("  → Borderless windowed 1920x1080")
             self._status_bar.showMessage(f"Launched {project['name']}")
         except Exception as e:
             self.detail_panel.log(f"ERROR: {e}")
