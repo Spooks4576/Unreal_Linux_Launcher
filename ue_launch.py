@@ -1045,22 +1045,18 @@ class UELauncher(QMainWindow):
     def _launch_process(self, binary: str, uproject: str, project_name: str):
         env = os.environ.copy()
         env.update({
-            # FIFO present mode — stops UE5 starving the compositor's present queue
             "VK_PRESENT_MODE": "2",
-            # Safe no-op on NVIDIA, prevents AMD layer interference if ever dual-GPU
             "DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1": "1",
-            # Stops Blackwell driver aggressively reallocating VRAM on UE5 init,
-            # which yanks memory pages COSMIC is actively using for its render targets
             "NVIDIA_PRESERVE_VIDEO_MEMORY_ALLOCATIONS": "1",
-            # Force borderless windowed — prevents UE5 grabbing exclusive scanout
             "UE_FULLSCREEN_MODE": "2",
-            # Keep Vulkan threaded optimisations alive across focus switches
-            "VK_NVIDIA_THREADED_OPTIMIZATIONS": "1",
+            # Tell the RHI explicitly to use OpenGL
+            "UE_FORCE_RHI": "opengl",
         })
 
         cmd = [
             binary,
             uproject,
+            "-opengl",
             "-windowed",
             "-ResX=1920",
             "-ResY=1080",
