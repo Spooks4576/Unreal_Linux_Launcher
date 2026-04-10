@@ -397,67 +397,28 @@ QProgressBar::chunk {
 
 
 def _lock_gpu_clocks(log_fn):
-    """
-    Lock the NVIDIA GPU to full performance state to prevent clock thrashing
-    when alt-tabbing between UE5 and other windows.
-
-    Requires passwordless sudo for nvidia-smi:
-        sudo visudo → add: YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi
-    """
     cmds = [
-        # Enable persistence mode — keeps driver loaded between app launches
-        (["sudo", "nvidia-smi", "-pm", "1"],           "persistence mode ON"),
-        # Full power limit (180W for RTX 5060 Ti)
-        (["sudo", "nvidia-smi", "-pl", "180"],          "power limit → 180W"),
-        # All-On GPU operation mode — disables dynamic power gating
-        (["sudo", "nvidia-smi", "--gom=0"],             "operation mode → ALL_ON"),
-        # Lock core clock range: floor 2400 MHz, ceiling 2850 MHz
-        # Prevents the driver from dropping to 180–405 MHz on focus loss
-        (["sudo", "nvidia-smi", "-lgc", "2400,2850"],   "core clocks locked 2400–2850 MHz"),
-        # Lock memory clock to full 14001 MHz — stops VRAM bandwidth thrashing
-        (["sudo", "nvidia-smi", "-lmc", "14001,14001"], "mem clocks locked @ 14001 MHz"),
+        (["sudo", "nvidia-smi", "-pm", "1"],  "persistence mode ON"),
+        (["sudo", "nvidia-smi", "-pl", "180"], "power limit → 180W"),
     ]
-    any_ok = False
     for cmd, label in cmds:
         try:
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if result.returncode == 0:
                 log_fn(f"  ✓ GPU: {label}")
-                any_ok = True
             else:
                 err = result.stderr.decode().strip().splitlines()
-                short = err[0] if err else "unknown error"
-                log_fn(f"  ✗ GPU: {label} — {short}")
+                log_fn(f"  ✗ GPU: {label} — {err[0] if err else 'unknown'}")
         except FileNotFoundError:
-            log_fn("  ✗ GPU: nvidia-smi not found — skipping clock lock")
+            log_fn("  ✗ GPU: nvidia-smi not found")
             return
         except Exception as e:
             log_fn(f"  ✗ GPU: {label} — {e}")
 
-    if not any_ok:
-        log_fn("  ⚠ GPU clock lock failed — add nvidia-smi to sudoers for best results")
-        log_fn("    sudo visudo → YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi")
-
 
 def _unlock_gpu_clocks():
-    """
-    Restore GPU to automatic clock management on exit.
-    Called from closeEvent so clocks don't stay locked after the launcher closes.
-    """
-    cmds = [
-        ["sudo", "nvidia-smi", "-rgc"],    # reset core clock lock
-        ["sudo", "nvidia-smi", "-rmc"],    # reset memory clock lock
-        ["sudo", "nvidia-smi", "-pm", "0"],  # disable persistence mode
-    ]
-    for cmd in cmds:
-        try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+    subprocess.run(["sudo", "nvidia-smi", "-pm", "0"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class ScannerThread(QThread):
