@@ -2,6 +2,9 @@
 """
 Unreal Engine Launcher for Linux
 Requires: sudo apt install python3-pyqt6
+
+GPU clock locking requires passwordless sudo for nvidia-smi:
+  sudo visudo  →  add:  YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi
 """
 
 import os
@@ -391,6 +394,70 @@ QProgressBar::chunk {
     letter-spacing: 2px;
 }
 """
+
+
+def _lock_gpu_clocks(log_fn):
+    """
+    Lock the NVIDIA GPU to full performance state to prevent clock thrashing
+    when alt-tabbing between UE5 and other windows.
+
+    Requires passwordless sudo for nvidia-smi:
+        sudo visudo → add: YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi
+    """
+    cmds = [
+        # Enable persistence mode — keeps driver loaded between app launches
+        (["sudo", "nvidia-smi", "-pm", "1"],           "persistence mode ON"),
+        # Full power limit (180W for RTX 5060 Ti)
+        (["sudo", "nvidia-smi", "-pl", "180"],          "power limit → 180W"),
+        # All-On GPU operation mode — disables dynamic power gating
+        (["sudo", "nvidia-smi", "--gom=0"],             "operation mode → ALL_ON"),
+        # Lock core clock range: floor 2400 MHz, ceiling 2850 MHz
+        # Prevents the driver from dropping to 180–405 MHz on focus loss
+        (["sudo", "nvidia-smi", "-lgc", "2400,2850"],   "core clocks locked 2400–2850 MHz"),
+        # Lock memory clock to full 14001 MHz — stops VRAM bandwidth thrashing
+        (["sudo", "nvidia-smi", "-lmc", "14001,14001"], "mem clocks locked @ 14001 MHz"),
+    ]
+    any_ok = False
+    for cmd, label in cmds:
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if result.returncode == 0:
+                log_fn(f"  ✓ GPU: {label}")
+                any_ok = True
+            else:
+                err = result.stderr.decode().strip().splitlines()
+                short = err[0] if err else "unknown error"
+                log_fn(f"  ✗ GPU: {label} — {short}")
+        except FileNotFoundError:
+            log_fn("  ✗ GPU: nvidia-smi not found — skipping clock lock")
+            return
+        except Exception as e:
+            log_fn(f"  ✗ GPU: {label} — {e}")
+
+    if not any_ok:
+        log_fn("  ⚠ GPU clock lock failed — add nvidia-smi to sudoers for best results")
+        log_fn("    sudo visudo → YOUR_USER ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi")
+
+
+def _unlock_gpu_clocks():
+    """
+    Restore GPU to automatic clock management on exit.
+    Called from closeEvent so clocks don't stay locked after the launcher closes.
+    """
+    cmds = [
+        ["sudo", "nvidia-smi", "-rgc"],    # reset core clock lock
+        ["sudo", "nvidia-smi", "-rmc"],    # reset memory clock lock
+        ["sudo", "nvidia-smi", "-pm", "0"],  # disable persistence mode
+    ]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
 
 class ScannerThread(QThread):
@@ -989,31 +1056,47 @@ class UELauncher(QMainWindow):
     def _do_launch(self, project: dict, engine: dict):
         binary   = engine.get("binary", "")
         uproject = project["path"]
-    
+
         if not os.path.isfile(binary):
             binary = self._find_editor_binary(engine["path"])
-    
+
         if not binary:
             self.detail_panel.log(
                 f"ERROR: Could not find editor binary in {engine['path']}"
             )
             return
-    
+
         self.detail_panel.log(f"Launching: {binary} \"{uproject}\"")
         self._status_bar.showMessage(f"Launching {project['name']}...")
-    
+
+        # ── GPU clock lock ────────────────────────────────────────────────────
+        # Locks clocks before UE5 starts to prevent the driver from thrashing
+        # between ~180 MHz idle and 2850 MHz every time you alt-tab.
+        # Runs in a thread so the UI stays responsive during the sudo calls.
+        self.detail_panel.log("→ Locking GPU clocks to prevent alt-tab thrashing...")
+
+        def _launch_after_lock():
+            _lock_gpu_clocks(self.detail_panel.log)
+            self._launch_process(binary, uproject, project["name"])
+
+        threading.Thread(target=_launch_after_lock, daemon=True).start()
+
+    def _launch_process(self, binary: str, uproject: str, project_name: str):
         env = os.environ.copy()
         env.update({
-            # Prevent UE5 from grabbing exclusive Vulkan scanout and blacking out compositor
+            # FIFO present mode — stops UE5 starving the compositor's present queue
             "VK_PRESENT_MODE": "2",
-            # Stop AMD switchable graphics layer interfering (safe to set on NVIDIA too)
+            # Safe no-op on NVIDIA, prevents AMD layer interference if ever dual-GPU
             "DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1": "1",
-            # Prevent Blackwell driver aggressively reallocating VRAM on init
+            # Stops Blackwell driver aggressively reallocating VRAM on UE5 init,
+            # which yanks memory pages COSMIC is actively using for its render targets
             "NVIDIA_PRESERVE_VIDEO_MEMORY_ALLOCATIONS": "1",
-            # Force borderless windowed at your resolution - prevents fullscreen black screen
+            # Force borderless windowed — prevents UE5 grabbing exclusive scanout
             "UE_FULLSCREEN_MODE": "2",
+            # Keep Vulkan threaded optimisations alive across focus switches
+            "VK_NVIDIA_THREADED_OPTIMIZATIONS": "1",
         })
-    
+
         cmd = [
             binary,
             uproject,
@@ -1021,8 +1104,12 @@ class UELauncher(QMainWindow):
             "-ResX=1920",
             "-ResY=1080",
             "-WaylandEnable",
+            # Skip GC flush on focus loss — reduces stutter when switching windows
+            "-NoVerifyGC",
+            # Stop UE5 spinning down threads when it loses focus
+            "-reducethreadusage",
         ]
-    
+
         try:
             subprocess.Popen(
                 cmd,
@@ -1031,13 +1118,21 @@ class UELauncher(QMainWindow):
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            self.detail_panel.log("✓ Launch command sent. Editor is starting...")
+            self.detail_panel.log("✓ Launch command sent — editor is starting...")
             self.detail_panel.log("  → VK_PRESENT_MODE=2 (FIFO, compositor-safe)")
             self.detail_panel.log("  → NVIDIA_PRESERVE_VIDEO_MEMORY_ALLOCATIONS=1")
-            self.detail_panel.log("  → Borderless windowed 1920x1080")
-            self._status_bar.showMessage(f"Launched {project['name']}")
+            self.detail_panel.log("  → Borderless windowed 1920×1080")
+            self.detail_panel.log("  → -NoVerifyGC -reducethreadusage")
+            self.detail_panel._status_signal.emit(f"Launched {project_name}")
         except Exception as e:
             self.detail_panel.log(f"ERROR: {e}")
+
+    def closeEvent(self, event):
+        # Restore GPU to auto clock management so clocks don't stay locked
+        # after the launcher exits.
+        self.detail_panel.log("→ Restoring GPU clocks to auto...")
+        _unlock_gpu_clocks()
+        event.accept()
 
     def _do_generate(self, project: dict, engine: dict):
         engine_root = engine["path"]
@@ -1105,7 +1200,6 @@ class UELauncher(QMainWindow):
         self._status_bar.showMessage(f"Compiling {project_name}...")
 
         panel  = self.detail_panel
-        status = self._status_bar
 
         def run_in_thread():
             try:
